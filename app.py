@@ -1,5 +1,5 @@
 import mysql.connector
-from kivymd.app import App
+from kivy.app import App
 from kivymd.app import MDApp
 from kivymd.uix.boxlayout import MDBoxLayout
 from kivymd.uix.button import MDFlatButton
@@ -8,17 +8,33 @@ from kivymd.uix.textfield import MDTextField
 from kivymd.uix.filemanager import MDFileManager
 from kivy.uix.screenmanager import Screen
 from kivy.lang import Builder
+from kivy.uix.screenmanager import ScreenManager
+from kivy.uix.scrollview import ScrollView
+from kivymd.uix.list import MDList
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.label import Label
+from kivy.uix.textinput import TextInput
+from kivymd.uix.button import MDFloatingActionButton
+from kivy.uix.button import Button
+from kivy.uix.popup import Popup
+from kivy.uix.filechooser import FileChooserIconView
 
+try :
+    db = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="",
+        database="app"
+    )
+    cursor = db.cursor()
+except mysql.connector.Error as err:
+    print(f"Error connecting to database: {err}")
 
 # Simulated in-memory user data
 user_data = {"user": "password"}
 
 # Builder string for the KV language
 kv = '''
-ScreenManager:
-    LoginScreen:
-    RegisterScreen:
-
 <LoginScreen>:
     name: 'login'
 
@@ -75,7 +91,6 @@ ScreenManager:
         pos_hint: {'center_x': 0.5, 'center_y': 0.3}
         on_release: root.manager.current = 'login'
 '''
-
 # Login Screen
 class LoginScreen(Screen):
     def login(self):
@@ -83,17 +98,19 @@ class LoginScreen(Screen):
         password = self.ids.password_input.text
 
         try:
-            if ChatApp.cursor:
                 # Query to check if username and password match
-                query = "SELECT * FROM users WHERE username = %s AND password = %s"
-                ChatApp.cursor.execute(query, (username, password))
-                user = ChatApp.cursor.fetchone()
-                if user:
-                    print("Logged in successfully")
-                else:
-                    print("Invalid username or password")
+            query = "SELECT * FROM users WHERE username = %s AND password = %s"
+            cursor.execute(query, (username, password))
+            user = cursor.fetchone()
+            if user:
+                print("Logged in successfully")
+                app = MDApp.get_running_app()
+                user_interface_screen = app.root.get_screen('user_interface')
+                if user_interface_screen:
+                    user_interface_screen.show_accounts_list()
+                    app.root.current = 'user_interface'
             else:
-                print("Cursor is not initialized.")
+                print("Invalid username or password")
         except mysql.connector.Error as err:
             print(f"Error: {err}")
         finally:
@@ -103,71 +120,168 @@ class LoginScreen(Screen):
 
 # Register Screen
 class RegisterScreen(Screen):
-    def register(self):
+     def register(self):
         new_username = self.ids.new_username_input.text
         new_password = self.ids.new_password_input.text
 
-        # Check if the new username already exists
-        if new_username in user_data:
-            print("Username already taken")
+        if new_username and new_password:
+            try:
+                # Check if the new username already exists in the database
+                cursor.execute("SELECT * FROM users WHERE username = %s", (new_username,))
+                existing_user = cursor.fetchone()
+
+                if existing_user:
+                    print("Username already taken")
+                else:
+                    # Insert the new user into the 'users' table
+                    insert_query = "INSERT INTO users (username, password) VALUES (%s, %s)"
+                    cursor.execute(insert_query, (new_username, new_password))
+                    db.commit()
+                    print(f"Registered new user: {new_username}")
+                    
+            except mysql.connector.Error as err:
+                print(f"Error: {err}")
         else:
-            # Placeholder for user registration (simulated in-memory data)
-            if new_username and new_password:
-                user_data[new_username] = new_password
-                print(f"Registered new user: {new_username}")
-            else:
-                print("Please enter a valid username and password")
+            print("Please enter a valid username and password")
+
+class UserInterfaceScreen(Screen):
+    name = 'user_interface'
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.accounts_list = MDList()
+        self.show_accounts_list()
+
+        # Adjust the orientation and arrangement of widgets
+        self.vertical_layout = BoxLayout(orientation="vertical")
+        self.vertical_layout.add_widget(self.accounts_list)
+
+        self.add_widget(self.vertical_layout)
+
+    def show_accounts_list(self):
+        self.accounts_list.clear_widgets()  # Clear previous account buttons
+        try:
+            sql = "SELECT username FROM users"
+            cursor.execute(sql)
+            accounts = cursor.fetchall()
+            for account in accounts:
+                username = account[0]
+                account_button = MDFlatButton(text=username, on_release=self.select_account)
+                self.accounts_list.add_widget(account_button)
+        except mysql.connector.Error as err:
+            print(f"Error fetching accounts: {err}")
+            
+    def select_account(self, instance):
+        try:
+            selected_username = instance.text
+            app = App.get_running_app()
+            login_screen = app.root.get_screen('login')
+            if login_screen:
+                username_input_text = login_screen.ids.username_input.text
+
+                # Logic to handle account selection
+                if selected_username != username_input_text:
+                    # Display the chat interface only if a different account is selected
+                    self.manager.current = 'chat_screen'  # Switch to the chat screen
+                    chat_screen = self.manager.get_screen('chat_screen')
+                    chat_screen.selected_username = selected_username  # Store selected username
+                    chat_screen.update_chat_interface()  # Update chat interface
+                else:
+                    print("Cannot select own account for chat")
+        except Exception as e:
+            print(f"Error selecting account: {e}")
+
+
+class ChatScreen(Screen):
+    name = "chat_screen"
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.selected_file = None  # Store selected file path
+        self.chat_layout = BoxLayout(orientation="vertical")
+        self.chat_scroll = ScrollView()
+        self.chat_box = BoxLayout(orientation="vertical", size_hint_y=None, padding=(10, 10))
+        self.chat_box.bind(minimum_height=self.chat_box.setter('height'))
+        self.chat_scroll.add_widget(self.chat_box)
+        self.chat_layout.add_widget(self.chat_scroll)
+        self.add_widget(self.chat_layout)
+        # Create a BoxLayout for the message input and buttons
+        self.input_box = BoxLayout(orientation="horizontal", size_hint=(1, 0.2))
+        self.message_input = TextInput(hint_text="Type your message here...", multiline=False, size_hint=(0.7, 1))
+        
+        # Create "Send" button
+        self.send_button = Button(text="Send", size_hint=(0.15, 1))
+        self.send_button.bind(on_release=self.send_message)
+        
+        # Create "Attachments" button
+        self.attach_button = Button(text="Attachments", size_hint=(0.15, 1))
+        self.attach_button.bind(on_release=self.attach_file)
+        
+        # Add TextInput and buttons to the input_box
+        self.input_box.add_widget(self.message_input)
+        self.input_box.add_widget(self.send_button)
+        self.input_box.add_widget(self.attach_button)
+        
+        # Add input_box to your layout (replace chat_layout with your appropriate layout)
+        self.chat_layout.add_widget(self.input_box)
+
+
+    def attach_file(self, instance):
+        # Add logic to attach files
+        file_popup = Popup(title="Attach File", size_hint=(0.8, 0.8))
+        file_chooser = FileChooserIconView()
+        file_chooser.bind(on_submit=self.select_file)
+        file_popup.add_widget(file_chooser)
+        file_popup.open()
+
+    def select_file(self, instance):
+        self.selected_file = instance.selection[0] if instance.selection else None
+
+    def send_message(self, instance):  # Update the method signature to accept only 'self'
+        message_text = self.message_input.text.strip()
+        if message_text or self.selected_file:
+            try:
+                # Replace with your SQL insert query
+                query = "INSERT INTO messages (sender, receiver, text, attached_file) VALUES (%s, %s, %s, %s)"
+                cursor.execute(query, ("sender_username", "receiver_username", message_text, self.selected_file))
+                db.commit()
+                self.update_chat_interface()
+                self.message_input.text = ""  # Clear the message input field
+                self.selected_file = None  # Reset selected file after sending
+            except mysql.connector.Error as err:
+                print(f"Error sending message: {err}")
+
+    def update_chat_interface(self):
+        chat_layout = self.ids.chat_layout  # Access the GridLayout
+
+        try:
+            query = "SELECT sender, text, attached_file FROM messages WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s) ORDER BY id ASC"
+            cursor.execute(query, ("sender_username", "receiver_username", "receiver_username", "sender_username"))
+            messages = cursor.fetchall()
+
+            for sender, text, attached_file in messages:
+                message_label = Label(text=f"{sender}: {text}", size_hint_y=None, height=dp(40))
+                chat_layout.add_widget(message_label)
+        except mysql.connector.Error as err:
+            print(f"Error fetching messages: {err}")
+
 
 class ChatApp(MDApp):
-    
-    #db = None
-    #cursor = None
-    def connect_to_database(self):
-        try :
-            self.db = mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="",
-            database="app"
-        )
-            cursor = self.db.cursor()
-        except mysql.connector.Error as err:
-            print(f"Error connecting to database: {err}")
-            
+    file_manager = None
     def build(self):
-        self.layout = MDBoxLayout(orientation='vertical')
+        Builder.load_string(kv)
+        screen_manager = ScreenManager()
 
-        self.username_input = MDTextField(hint_text="Enter username")
-        self.password_input = MDTextField(hint_text="Enter password", password=True)
+        login_screen = LoginScreen(name='login')
+        register_screen = RegisterScreen(name='register')
+        user_interface_screen = UserInterfaceScreen(name='user_interface')
+        chat_interface_screen = ChatScreen(name='chat_screen')  # Assuming ChatScreen is for the chat interface
 
-        register_button = MDFlatButton(text="Register", on_press=self.register_user)
-        login_button = MDFlatButton(text="Login", on_press=self.login_user)
+        screen_manager.add_widget(login_screen)
+        screen_manager.add_widget(register_screen)
+        screen_manager.add_widget(user_interface_screen)
+        screen_manager.add_widget(chat_interface_screen)  # Add ChatScreen for the chat interface
+        screen_manager.current = 'login'  # Set the initial screen to login_screen
 
-        self.status_label = MDLabel(text="")
-        self.accounts_label = MDLabel(text="Accounts:")
-
-        self.layout.add_widget(self.username_input)
-        self.layout.add_widget(self.password_input)
-        self.layout.add_widget(register_button)
-        self.layout.add_widget(login_button)
-        self.layout.add_widget(self.status_label)
-        self.layout.add_widget(self.accounts_label)
-
-        self.file_manager = None
-        self.file_manager = MDFileManager(exit_manager=self.exit_manager_callback)  # Initialize file manager
-        self.file_manager.bind(on_select=self.select_file)
-
-        self.connect_to_database
-        self.update_accounts_list()
-        self.send_button = MDFlatButton(text="Send", on_press=self.send_message)
-        self.layout.add_widget(self.send_button)
-        self.update_accounts_list()
-        self.theme_cls.primary_palette = "BlueGray"
-        self.theme_cls.theme_style = "Dark"
-
-        screen_manager = Builder.load_string(kv)
         return screen_manager
-        return self.layout
     
     def exit_manager_callback(self, *args):
         try:
@@ -186,188 +300,6 @@ class ChatApp(MDApp):
         if self.file_manager:
             self.file_manager.close()
 
-    def create_table_if_not_exists(self):
-        try:
-            self.cursor.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    username VARCHAR(50) UNIQUE,
-                    password VARCHAR(50)
-                )
-            """)
-            self.cursor.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    sender VARCHAR(50),
-                    receiver VARCHAR(50),
-                    message TEXT,
-                    FOREIGN KEY (sender) REFERENCES users(username),
-                    FOREIGN KEY (receiver) REFERENCES users(username)
-                )
-            """)
-            self.db.commit()
-        except mysql.connector.Error as err:
-            print(f"Error creating tables: {err}")
-
-    def register_user(self, instance):
-        username = self.username_input.text
-        password = self.password_input.text
-
-        if username and password:
-            try:
-                sql = "INSERT INTO users (username, password) VALUES (%s, %s)"
-                self.cursor.execute(sql, (username, password))
-                self.db.commit()
-                self.status_label.text = f"Registered successfully: {username}"
-                self.update_accounts_list()
-            except mysql.connector.Error as err:
-                self.status_label.text = f"Error: {err}"
-
-    def login_user(self, instance):
-        username = self.username_input.text
-        password = self.password_input.text
-
-        if username and password:
-            try:
-                sql = "SELECT * FROM users WHERE username = %s AND password = %s"
-                self.cursor.execute(sql, (username, password))
-                user = self.cursor.fetchone()
-                if user:
-                    self.status_label.text = f"Logged in successfully: {username}"
-                    self.show_accounts_list()
-                else:
-                    self.status_label.text = "Invalid username or password"
-            except mysql.connector.Error as err:
-                self.status_label.text = f"Error: {err}"
-
-    def show_accounts_list(self):
-        self.layout.clear_widgets()
-        self.layout.add_widget(self.accounts_label)
-
-        try:
-            sql = "SELECT username FROM users"
-            self.cursor.execute(sql)
-            accounts = self.cursor.fetchall()
-            for account in accounts:
-                username = account[0]
-                account_button = MDFlatButton(text=username, on_press=self.select_account)
-                self.layout.add_widget(account_button)
-        except mysql.connector.Error as err:
-            self.status_label.text = f"Error: {err}"
-
-    def select_account(self, instance):
-        selected_username = instance.text
-        self.show_chat_interface(selected_username)
-
-    def show_chat_interface(self, username):
-        self.layout.clear_widgets()  # Clear previous widgets
-        chat_layout = MDBoxLayout(orientation='vertical')
-
-        self.selected_user_label = MDLabel(text=f"Chatting with: {username}", halign='center')
-        chat_history_label = MDLabel(text="Chat History:", halign='center')
-        self.message_history = MDLabel(text="", halign='left', valign='top', size_hint_y=None, height=200, multiline=True)
-
-        self.user_input = MDTextField(hint_text="Type your message here")
-        send_button = MDFlatButton(text="Send", on_press=self.send_message)
-
-        chat_layout.add_widget(self.selected_user_label)
-        chat_layout.add_widget(chat_history_label)
-        chat_layout.add_widget(self.message_history)
-        chat_layout.add_widget(self.user_input)
-        chat_layout.add_widget(send_button)
-
-        self.layout.add_widget(chat_layout)
-
-        # Fetch message history between current user and selected username
-        sender = self.username_input.text  # Current logged-in user
-        receiver = username
-        self.update_message_history(sender, receiver)
-
-    def send_message(self, instance):
-        receiver = self.user_input.text
-        message = "Your message here"  # Replace with the actual message input
-        sender = self.selected_user_label.text.split(": ")[1]  # Extract sender from the logged-in user label
-
-        if receiver and (message or self.file_chooser.selection):
-            try:
-                # Handle message
-                if message:
-                    sql = "INSERT INTO messages (sender, receiver, message) VALUES (%s, %s, %s)"
-                    self.cursor.execute(sql, (sender, receiver, message))
-                    self.db.commit()
-
-                # Handle file upload
-                if self.file_chooser.selection:
-                    selected_file = self.file_chooser.selection[0]
-                    file_path = selected_file.replace("\\", "/")  # Normalize path for MySQL
-                    file_type = "file"  # Default type if not an image or video
-
-                    if file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
-                        file_type = "image"
-                    elif file_path.lower().endswith(('.mp4', '.avi', '.mov')):
-                        file_type = "video"
-
-                    sql = "INSERT INTO files (sender, receiver, file_path, file_type) VALUES (%s, %s, %s, %s)"
-                    self.cursor.execute(sql, (sender, receiver, file_path, file_type))
-                    self.db.commit()
-
-                # Update message history
-                self.update_message_history(sender, receiver)
-            except mysql.connector.Error as err:
-                print(f"Error sending message: {err}")
-
-        # Clear input and file chooser after sending
-        self.user_input.text = ""
-        self.file_chooser.selection = []
-
-    def update_accounts_list(self):
-        try:
-            sql = "SELECT username FROM users"
-            self.cursor.execute(sql)
-            accounts =self.cursor.fetchall()
-
-            # Assuming self.layout and self.accounts_label are properly initialized
-            self.layout.clear_widgets()  # Clear previous widgets
-            self.layout.add_widget(self.accounts_label)
-
-            for account in accounts:
-                username = account[0]
-                account_button = MDFlatButton(text=username, on_press=self.select_account)
-                self.layout.add_widget(account_button)
-        except mysql.connector.Error as err:
-            print(f"Error fetching accounts: {err}")
-            
-    def select_account(self, instance):
-        try:
-            if not self.cursor:
-                self.connect_to_database()  # Reconnect if cursor is None
-            # Reassign cursor after reconnecting
-            self.cursor = self.db.cursor()
-
-            selected_username = instance.text
-            # Logic to handle account selection
-            # For example, you might want to display chat history with the selected user
-            self.show_chat_interface(selected_username)
-        except mysql.connector.Error as err:
-            print(f"Error selecting account: {err}")
-
-    def select_file(self, instance):
-        selected_file = instance.selection[0]
-        # Handle selected file
-
-    def update_message_history(self, sender, receiver):
-        try:
-            sql = "SELECT message FROM messages WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s)"
-            self.cursor.execute(sql, (sender, receiver, receiver, sender))
-            messages = self.cursor.fetchall()
-
-            message_history_text = ""
-            for msg in messages:
-                message_history_text += f"{msg[0]}\n"
-
-            self.message_history.text = message_history_text
-        except mysql.connector.Error as err:
-            print(f"Error updating message history: {err}")
-
 if __name__ == "__main__":
+    
     ChatApp().run()
